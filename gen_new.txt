@@ -1,0 +1,135 @@
+import pandas as pd
+import numpy as np
+import boto3
+from langchain_community.chat_models import BedrockChat
+from langchain_core.prompts import FewShotPromptTemplate, PromptTemplate
+from boto3 import client
+from botocore.config import Config
+
+# Function to infer column types
+def infer_column_types(df):
+    inferred_types = {}
+    for column in df.columns:
+        # Drop missing values
+        non_null_values = df[column].dropna()
+        # Infer type using pandas' type inference functions
+        if pd.api.types.is_integer_dtype(non_null_values):
+            inferred_types[column] = 'int'
+        elif pd.api.types.is_float_dtype(non_null_values):
+            inferred_types[column] = 'float'
+        elif pd.api.types.is_datetime64_any_dtype(non_null_values):
+            inferred_types[column] = 'datetime'
+        elif pd.api.types.is_bool_dtype(non_null_values):
+            inferred_types[column] = 'bool'
+        elif pd.api.types.is_string_dtype(non_null_values):
+            inferred_types[column] = 'string'
+        else:
+            inferred_types[column] = 'object'
+    return inferred_types
+
+# Example DataFrame
+df = pd.DataFrame({
+    'order_id': [1, 2, 3],
+    'customer_name': ['John', 'Prince', 'Bob'],
+    'table_number': [12, 5, 20],
+    'order_date': ['2024-06-26', '2024-06-26', '2024-06-26'],
+    'order_time': ['19:00', '19:15', '20:10'],
+    'waiter_id': ['W001', 'W002', 'W003'],
+    'item_id': ['I001', 'I002', 'I003'],
+    'item_name': ['Cheeseburger', 'Vegan Salad', 'Grilled Chicken'],
+    'quantity': [2, 1, 3],
+    'item_price': [12.50, 9.00, 15.00],
+    'total_item_price': [25.00, 9.00, 45.00],
+    'order_status': ['Completed', 'Completed', 'Pending'],
+    'payment_method': ['Credit Card', 'Cash', 'Online Payment'],
+    'total_order_price': [60.00, 45.00, 53.40],
+    'discounts': [0.00, 0.00, 2.40],
+    'tax': [5.00, 3.60, 6.00],
+    'tip': [5.00, 4.00, 0.00],
+    'payment_status': ['Paid', 'Paid', 'Pending']
+})
+
+# Convert relevant columns to datetime
+df['order_date'] = pd.to_datetime(df['order_date'], errors='coerce')
+
+# Infer column types
+column_types = infer_column_types(df)
+print("Inferred Column Types:", column_types)
+
+# Convert each row in the dataframe to the required string format
+def convert_row_to_string(row):
+    return f"""
+Order ID: {row['order_id']}, Customer Name: {row['customer_name']}, Table Number: {row['table_number']}, Order Date: {row['order_date'].strftime('%Y-%m-%d')}, Order Time: {row['order_time']}, Waiter ID: {row['waiter_id']}, Item ID: {row['item_id']}, Item Name: {row['item_name']}, Quantity: {row['quantity']}, Item Price: {row['item_price']:.2f}, Total Item Price: {row['total_item_price']:.2f}, Order Status: {row['order_status']}, Payment Method: {row['payment_method']}, Total Order Price: {row['total_order_price']:.2f}, Discounts: {row['discounts']:.2f}, Tax: {row['tax']:.2f}, Tip: {row['tip']:.2f}, Payment Status: {row['payment_status']}
+    """
+
+# Create examples by converting each row in the DataFrame
+examples = [{"example": convert_row_to_string(row)} for _, row in df.iterrows()]
+
+# Load the Claude 3 model
+def load_model():
+    config = Config(read_timeout=1000)
+    bedrock_runtime = boto3.client(
+        service_name='bedrock-runtime', 
+        region_name='us-east-1',
+        config=config
+    )
+
+    model_id = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    
+    model_kwargs = { 
+        "max_tokens": 100000,
+        "temperature": 0,
+        "top_k": 250,
+        "top_p": 1,
+        "stop_sequences": ["\n\nHuman"],
+    }
+    
+    model = BedrockChat(
+        client=bedrock_runtime,
+        model_id=model_id,
+        model_kwargs=model_kwargs,
+    )
+    
+    return model
+
+llm = load_model()
+
+# Define the schema as a string based on inferred types
+schema = "\n".join([f"{col}: {dtype}" for col, dtype in column_types.items()])
+
+# Define the prompt template incorporating the inferred schema
+order_template = """
+Order ID: {order_id}, Customer Name: {customer_name}, Table Number: {table_number}, Order Date: {order_date}, Order Time: {order_time}, Waiter ID: {waiter_id}, Item ID: {item_id}, Item Name: {item_name}, Quantity: {quantity}, Item Price: {item_price:.2f}, Total Item Price: {total_item_price:.2f}, Order Status: {order_status}, Payment Method: {payment_method}, Total Order Price: {total_order_price:.2f}, Discounts: {discounts:.2f}, Tax: {tax:.2f}, Tip: {tip:.2f}, Payment Status: {payment_status}
+"""
+
+# Define a FewShotPromptTemplate using the inferred schema
+prompt_template = FewShotPromptTemplate(
+    prefix=f"Here is the schema of the data:\n{schema}\n\nHere are some examples of restaurant orders:\n\n",
+    examples=examples,
+    suffix="Generate similar orders based on the provided examples.",
+    input_variables=["subject", "extra"],
+    example_prompt=PromptTemplate(
+        input_variables=list(df.columns),
+        template=order_template
+    )
+)
+
+# Define a function to generate synthetic data
+def generate_synthetic_data(subject: str, extra: str, runs: int):
+    results = []
+    for _ in range(runs):
+        prompt = prompt_template.format(subject=subject, extra=extra)
+        response = llm.generate(prompt)
+        results.append(response)
+    return results
+
+# Generate synthetic data
+results = generate_synthetic_data(
+    subject="Order History",
+    extra="Customer name must be Indian names, generate Indian names only",
+    runs=20
+)
+
+# Print generated data
+for data in results:
+    print(data)
