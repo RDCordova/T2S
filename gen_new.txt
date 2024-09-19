@@ -133,3 +133,26 @@ results = generate_synthetic_data(
 # Print generated data
 for data in results:
     print(data)
+
+
+
+def create_prompt_template_col():
+    template = """
+    You are a helpful AI assistant for creating new datasets. You are given a singel column of data below as examples.
+    You are to generate similar observations based on the provided examples and schema.   
+    Only return the new observations, do not include any explanation. You should create number of observation equal to the count.
+    For example if the is equal to 10, then 10 new obervations are created.
+
+    examples: {examples}
+
+    schema: {schema}
+
+    count: {count}
+    """
+
+    prompt = PromptTemplate(
+        template=template,
+        input_variables=["examples", "schema", "count"]
+    )
+
+    return prompt
